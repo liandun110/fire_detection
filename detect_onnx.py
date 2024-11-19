@@ -1,7 +1,7 @@
 import cv2
 import torch
 import torchvision
-import onnxruntime
+import onnxruntime as ort
 import numpy as np
 
 
@@ -208,9 +208,8 @@ def clip_boxes(boxes, shape):
         boxes[..., [1, 3]] = boxes[..., [1, 3]].clip(0, shape[0])  # y1, y2
 
 
-session = onnxruntime.InferenceSession('/home/suma/Downloads/yolov5s_best.onnx',
-                                       providers='CPUExecutionProvider')
-im0 = cv2.imread('/home/suma/Downloads/aaa.jpg')  # BGR
+session = ort.InferenceSession("model.onnx", providers=["CPUExecutionProvider"])
+im0 = cv2.imread('img.png')  # BGR
 im = letterbox(im0, [640, 640], stride=32, auto=False)[0]  # padded resize
 im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
 im = np.ascontiguousarray(im)  # contiguous
@@ -219,10 +218,29 @@ im = im.float()
 im /= 255
 im = im[None]
 im = im.cpu().numpy()  # torch to numpy
+
+# 推理
 y = session.run(['output0'], {session.get_inputs()[0].name: im})
 pred = torch.from_numpy(y[0]).to('cpu')
+
+# 应用非极大值抑制
 pred = non_max_suppression(pred, 0.25, 0.45, None, False, max_det=1000)
+
+# 绘制检测框在原始图像 im0 上
 for i, det in enumerate(pred):
     if len(det):
+        # 将检测框还原到原始图像的大小
         det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()
-cv2.imwrite('/tmp/aaa.jpg', im0)
+
+        # 在 im0 上绘制框
+        for *xyxy, conf, cls in det:
+            # 转换框的坐标
+            x1, y1, x2, y2 = map(int, xyxy)
+            # 画框
+            cv2.rectangle(im0, (x1, y1), (x2, y2), (0, 0, 255), 2)  # 红色框
+            cv2.putText(im0, f'Class {int(cls)}: {conf:.2f}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+# 保存或显示图像
+cv2.imshow('Result', im0)  # 显示结果
+cv2.waitKey(0)
+cv2.destroyAllWindows()

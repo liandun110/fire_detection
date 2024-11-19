@@ -15,3 +15,8 @@ python export.py --weights model.pt --include onnx --opset 16
 ```bash
 python detect.py --weights model.onnx --device=cpu --source=img.png
 ```
+
+# 使用onnx模型在一个文件里独立进行fire detection
+```bash
+python detect_onnx.py
+```
