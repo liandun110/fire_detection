@@ -38,6 +38,44 @@ def xywh2xyxy(x):
     return y
 
 
+def compute_iou(box, boxes):
+    # Compute xmin, ymin, xmax, ymax for both boxes
+    xmin = np.maximum(box[0], boxes[:, 0])
+    ymin = np.maximum(box[1], boxes[:, 1])
+    xmax = np.minimum(box[2], boxes[:, 2])
+    ymax = np.minimum(box[3], boxes[:, 3])
+
+    # Compute intersection area
+    intersection_area = np.maximum(0, xmax - xmin) * np.maximum(0, ymax - ymin)
+
+    # Compute union area
+    box_area = (box[2] - box[0]) * (box[3] - box[1])
+    boxes_area = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+    union_area = box_area + boxes_area - intersection_area
+
+    # Compute IoU
+    iou = intersection_area / union_area
+
+    return iou
+
+
+def nms(boxes, scores, iou_threshold):
+    # Sort by score
+    sorted_indices = np.argsort(scores)[::-1]
+    keep_boxes = []
+    while sorted_indices.size > 0:
+        # Pick the last box
+        box_id = sorted_indices[0]
+        keep_boxes.append(box_id)
+        # Compute IoU of the picked box with the rest
+        ious = compute_iou(boxes[box_id, :], boxes[sorted_indices[1:], :])
+        # Remove boxes with IoU over the threshold
+        keep_indices = np.where(ious < iou_threshold)[0]
+        sorted_indices = sorted_indices[keep_indices + 1]
+
+    return keep_boxes
+
+
 def non_max_suppression(
     prediction,
     conf_thres=0.25,
@@ -130,7 +168,12 @@ def non_max_suppression(
         # Batched NMS
         c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
         boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
-        i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
+        # i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
+        # boxes: tensor, shape=(28, 4). 28: 边框数量。4：(x1, y1, x2, y2)
+        # scores: tensor, shape=(28).
+        # iou_thres: 0.45
+        i = nms(boxes.numpy(), scores.numpy(), 0.45)
+
         i = i[:max_det]  # limit detections
         if merge and (1 < n < 3e3):  # Merge NMS (boxes merged using weighted mean)
             # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
@@ -220,8 +263,13 @@ im = im[None]
 im = im.cpu().numpy()  # torch to numpy
 
 # 推理
-y = session.run(['output0'], {session.get_inputs()[0].name: im})
-pred = torch.from_numpy(y[0]).to('cpu')
+y = session.run(['output0'], {session.get_inputs()[0].name: im})[0]
+# y: ndarray. shape=(1, 25200, 6)
+# y[..., :4]: 每个边框的位置。center_x, center_y, width, height
+# y[..., 4]: 每个边框的objective置信度得分
+# y[..., 5:]: 每个边框的类别置信度
+
+pred = torch.from_numpy(y).to('cpu')
 
 # 应用非极大值抑制
 pred = non_max_suppression(pred, 0.25, 0.45, None, False, max_det=1000)
