@@ -1,36 +1,11 @@
 import cv2
-import torch
-import torchvision
 import onnxruntime as ort
 import numpy as np
 
 
-def box_iou(box1, box2, eps=1e-7):
-    # https://github.com/pytorch/vision/blob/master/torchvision/ops/boxes.py
-    """
-    Return intersection-over-union (Jaccard index) of boxes.
-
-    Both sets of boxes are expected to be in (x1, y1, x2, y2) format.
-
-    Arguments:
-        box1 (Tensor[N, 4])
-        box2 (Tensor[M, 4])
-
-    Returns:
-        iou (Tensor[N, M]): the NxM matrix containing the pairwise
-            IoU values for every element in boxes1 and boxes2
-    """
-    # inter(N,M) = (rb(N,M,2) - lt(N,M,2)).clamp(0).prod(2)
-    (a1, a2), (b1, b2) = box1.unsqueeze(1).chunk(2, 2), box2.unsqueeze(0).chunk(2, 2)
-    inter = (torch.min(a2, b2) - torch.max(a1, b1)).clamp(0).prod(2)
-
-    # IoU = inter / (area1 + area2 - inter)
-    return inter / ((a2 - a1).prod(2) + (b2 - b1).prod(2) - inter + eps)
-
-
 def xywh2xyxy(x):
     """Convert nx4 boxes from [x, y, w, h] to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right."""
-    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y = np.copy(x)
     y[..., 0] = x[..., 0] - x[..., 2] / 2  # top left x
     y[..., 1] = x[..., 1] - x[..., 3] / 2  # top left y
     y[..., 2] = x[..., 0] + x[..., 2] / 2  # bottom right x
@@ -106,7 +81,7 @@ def non_max_suppression(
     # Settings
     # min_wh = 2  # (pixels) minimum box width and height
     max_wh = 7680  # (pixels) maximum box width and height
-    max_nms = 30000  # maximum number of boxes into torchvision.ops.nms()
+    max_nms = 30000
     time_limit = 0.5 + 0.05 * bs  # seconds to quit after
     redundant = True  # require redundant detections
     multi_label &= nc > 1  # multiple labels per box (adds 0.5ms/img)
@@ -118,15 +93,6 @@ def non_max_suppression(
         # Apply constraints
         # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
         x = x[xc[xi]]  # confidence
-
-        # Cat apriori labels if autolabelling
-        if labels and len(labels[xi]):
-            lb = labels[xi]
-            v = torch.zeros((len(lb), nc + nm + 5), device=x.device)
-            v[:, :4] = lb[:, 1:5]  # box
-            v[:, 4] = 1.0  # conf
-            v[range(len(lb)), lb[:, 0].long() + 5] = 1.0  # cls
-            x = torch.cat((x, v), 0)
 
         # If none remain process next image
         if not x.shape[0]:
@@ -144,10 +110,6 @@ def non_max_suppression(
         x = np.concatenate((box, conf, j.astype(np.float32), mask), axis=1)
         conf_condition = conf > conf_thres
         x = x[conf_condition.ravel()]
-
-        # Filter by class
-        if classes is not None:
-            x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
 
         # Check shape
         n = x.shape[0]  # number of boxes
@@ -217,14 +179,8 @@ def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None):
 
 def clip_boxes(boxes, shape):
     """Clips bounding box coordinates (xyxy) to fit within the specified image shape (height, width)."""
-    if isinstance(boxes, torch.Tensor):  # faster individually
-        boxes[..., 0].clamp_(0, shape[1])  # x1
-        boxes[..., 1].clamp_(0, shape[0])  # y1
-        boxes[..., 2].clamp_(0, shape[1])  # x2
-        boxes[..., 3].clamp_(0, shape[0])  # y2
-    else:  # np.array (faster grouped)
-        boxes[..., [0, 2]] = boxes[..., [0, 2]].clip(0, shape[1])  # x1, x2
-        boxes[..., [1, 3]] = boxes[..., [1, 3]].clip(0, shape[0])  # y1, y2
+    boxes[..., [0, 2]] = boxes[..., [0, 2]].clip(0, shape[1])  # x1, x2
+    boxes[..., [1, 3]] = boxes[..., [1, 3]].clip(0, shape[0])  # y1, y2
 
 
 session = ort.InferenceSession("model.onnx", providers=["CPUExecutionProvider"])
@@ -232,11 +188,9 @@ im0 = cv2.imread('img.png')  # BGR
 im = letterbox(im0, [640, 640], stride=32, auto=False)[0]  # padded resize
 im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
 im = np.ascontiguousarray(im)  # contiguous
-im = torch.from_numpy(im).to('cpu')
-im = im.float()
-im /= 255
-im = im[None]
-im = im.cpu().numpy()  # torch to numpy
+im = im.astype(np.float32)  # 确保数据是浮点型
+im /= 255.0  # 归一化
+im = np.expand_dims(im, axis=0)  # 扩展维度
 
 # 推理
 y = session.run(['output0'], {session.get_inputs()[0].name: im})[0]
